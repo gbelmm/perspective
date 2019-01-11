@@ -23,6 +23,7 @@
 #include <perspective/sym_table.h>
 #include <codecvt>
 #include <boost/optional.hpp>
+#include <perspective/date_parser.h>
 
 using namespace perspective;
 using namespace emscripten;
@@ -961,7 +962,7 @@ column_names(val data, std::int32_t format) {
 
 // Type inferrence for fill_col and data_types
 t_dtype
-infer_type(val x, val date_validator) {
+infer_type(val x, t_date_parser& date_parser) {
     std::string jstype = x.typeOf().as<std::string>();
     t_dtype t = t_dtype::DTYPE_STR;
 
@@ -996,7 +997,7 @@ infer_type(val x, val date_validator) {
             t = t_dtype::DTYPE_TIME;
         }
     } else if (jstype == "string") {
-        if (date_validator.call<val>("call", val::object(), x).as<bool>()) {
+        if (date_parser.is_valid(x.as<std::string>())) {
             t = t_dtype::DTYPE_TIME;
         } else {
             std::string lower = x.call<val>("toLowerCase").as<std::string>();
@@ -1006,13 +1007,15 @@ infer_type(val x, val date_validator) {
                 t = t_dtype::DTYPE_STR;
             }
         }
+    } else {
+        PSP_COMPLAIN_AND_ABORT("Could not infer type for value with jstype " + jstype);
     }
 
     return t;
 }
 
 t_dtype
-get_data_type(val data, std::int32_t format, std::string name, val date_validator) {
+get_data_type(val data, std::int32_t format, std::string const& name, t_date_parser& date_parser) {
     std::int32_t i = 0;
     boost::optional<t_dtype> inferredType;
 
@@ -1022,7 +1025,7 @@ get_data_type(val data, std::int32_t format, std::string name, val date_validato
             && i < data["length"].as<std::int32_t>()) {
             if (data[i].call<val>("hasOwnProperty", name).as<bool>() == true) {
                 if (!data[i][name].isNull()) {
-                    inferredType = infer_type(data[i][name], date_validator);
+                    inferredType = infer_type(data[i][name], date_parser);
                 } else {
                     inferredType = t_dtype::DTYPE_STR;
                 }
@@ -1034,7 +1037,7 @@ get_data_type(val data, std::int32_t format, std::string name, val date_validato
         while (!inferredType.is_initialized() && i < 100
             && i < data[name]["length"].as<std::int32_t>()) {
             if (!data[name][i].isNull()) {
-                inferredType = infer_type(data[name][i], date_validator);
+                inferredType = infer_type(data[name][i], date_parser);
             } else {
                 inferredType = t_dtype::DTYPE_STR;
             }
@@ -1051,7 +1054,7 @@ get_data_type(val data, std::int32_t format, std::string name, val date_validato
 }
 
 std::vector<t_dtype>
-data_types(val data, std::int32_t format, std::vector<std::string> names, val date_validator) {
+data_types(val data, std::int32_t format, std::vector<std::string>& names) {
     if (names.size() == 0) {
         PSP_COMPLAIN_AND_ABORT("Cannot determine data types without column names!");
     }
@@ -1062,9 +1065,8 @@ data_types(val data, std::int32_t format, std::vector<std::string> names, val da
         std::vector<std::string> data_names
             = vecFromJSArray<std::string>(val::global("Object").call<val>("keys", data));
 
-        for (std::vector<std::string>::iterator name = data_names.begin();
-             name != data_names.end(); ++name) {
-            std::string value = data[*name].as<std::string>();
+        for (auto name : data_names) {
+            std::string value = data[name].as<std::string>();
             t_dtype type;
 
             if (value == "integer") {
@@ -1080,7 +1082,7 @@ data_types(val data, std::int32_t format, std::vector<std::string> names, val da
             } else if (value == "date") {
                 type = t_dtype::DTYPE_DATE;
             } else {
-                PSP_COMPLAIN_AND_ABORT("Unknown type '" + value + "' for key '" + *name + "'");
+                PSP_COMPLAIN_AND_ABORT("Unknown type '" + value + "' for key '" + name + "'");
             }
 
             types.push_back(type);
@@ -1088,9 +1090,9 @@ data_types(val data, std::int32_t format, std::vector<std::string> names, val da
 
         return types;
     } else {
-        for (std::vector<std::string>::iterator name = names.begin(); name != names.end();
-             ++name) {
-            t_dtype type = get_data_type(data, format, *name, date_validator);
+        t_date_parser date_parser = t_date_parser();
+        for (auto name : names) {
+            t_dtype type = get_data_type(data, format, name, date_parser);
             types.push_back(type);
         }
     }
@@ -1157,7 +1159,6 @@ std::shared_ptr<t_gnode>
 make_table(t_pool* pool, val gnode, val accessor, val computed, std::uint32_t offset,
     std::uint32_t limit, std::string index, bool is_update, bool is_delete, bool is_arrow) {
     std::uint32_t size = accessor["row_count"].as<std::int32_t>();
-
     std::vector<std::string> colnames;
     std::vector<t_dtype> dtypes;
 
@@ -1171,7 +1172,7 @@ make_table(t_pool* pool, val gnode, val accessor, val computed, std::uint32_t of
         val data = accessor["data"];
         std::int32_t format = accessor["format"].as<std::int32_t>();
         colnames = column_names(data, format);
-        dtypes = data_types(data, format, colnames, accessor["date_validator"]);
+        dtypes = data_types(data, format, colnames);
     }
 
     // Check if index is valid after getting column names
