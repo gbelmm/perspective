@@ -55,10 +55,13 @@ t_date_parser::is_valid(std::string const& datestring) {
         pt::ptime time_obj;
         std::stringstream ss(datestring);
         ss.imbue(locale);
-        ss >> time_obj;
-
-        if (!time_obj.is_not_a_date_time()) {
+        bool is_date_time = static_cast<bool>(ss >> time_obj);
+        if (is_date_time) {
+            std::cout << "true" << std::endl;
             return true;
+        } else {
+            std::cout << "false" << std::endl;
+            continue;
         }
     }
     return false;
